@@ -1,0 +1,447 @@
+---
+title: "CAMLG project codes"
+author: "Hanwen Zhang"
+date: "2024-03-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+### Load packages
+library(gt)
+library(dplyr)
+library(table1)
+library(ggplot2)
+library(reshape2)
+library(readr)
+library(multcomp) # For TukeyHSD
+library(pheatmap) # For creating heatmap
+
+### Demographic information
+# Read data
+msaAll <- read.csv("msa.csv")
+
+# Compute demographic statistics first
+Total_Participants <- nrow(msaAll)
+Male <- sum(msaAll$Sex == 'Male')
+Female <- sum(msaAll$Sex == 'Female')
+Percent_Male <- (Male / Total_Participants) * 100
+Percent_Female <- (Female / Total_Participants) * 100
+Avg_Age <- mean(msaAll$Age)
+SD_Age <- sd(msaAll$Age)
+Avg_Age_Onset <- mean(na.omit(msaAll$PDCAgeOnset))
+SD_Age_Onset <- sd(na.omit(msaAll$PDCAgeOnset))
+
+# Create the summary data frame
+demographics_summary <- data.frame(
+  Total_Participants,
+  Male,
+  Female,
+  Percent_Male,
+  Percent_Female,
+  Avg_Age,
+  SD_Age,
+  Avg_Age_Onset,
+  SD_Age_Onset
+)
+
+# Save the summary data frame to a CSV file
+write.csv(demographics_summary, "demographics_summary.csv")
+
+# PC vs NC
+# Create a demographics table
+demographics_table <- msaAll %>%
+  group_by(SheetDx) %>%
+  summarise(
+    N = n(),
+    Avg_Age = mean(Age, na.rm = TRUE),
+    Median_Age = median(Age, na.rm = TRUE),
+    Female = sum(Sex == "Female", na.rm = TRUE),
+    Male = sum(Sex == "Male", na.rm = TRUE)
+  )
+
+# Create a demographics table for NC vs PD diagnostics
+tbl_NCvsPD <- table1(~ Age + Sex | SheetDx, data = msaAll)
+
+# Save as a CSV
+write.csv(tbl_NCvsPD, "table1_NCvsPD.csv")
+
+# Print out the table
+print(tbl_NCvsPD)
+
+
+
+library(dplyr)
+library(table1)
+
+# Read data
+msaAll <- read.csv("msa.csv")
+
+# Remove rows with NA in ConsensusDx
+msaAll <- msaAll[!is.na(msaAll$ConsensusDx), ]
+
+# Create a demographics table for within-PD diagnostics
+demographics_table_within_PD <- msaAll %>%
+  group_by(ConsensusDx) %>%
+  summarise(
+    N = n(),
+    Avg_Age = mean(Age, na.rm = TRUE),
+    Median_Age = median(Age, na.rm = TRUE),
+    Avg_Age_Onset = mean(PDCAgeOnset, na.rm = TRUE),
+    Median_Age_Onset = median(PDCAgeOnset, na.rm = TRUE),
+    Female = sum(Sex == "Female", na.rm = TRUE),
+    Male = sum(Sex == "Male", na.rm = TRUE)
+  )
+
+# Print out the table
+print(demographics_table_within_PD)
+
+# Create a demographics table for within-PD diagnostics including Race and Age of Onset
+tbl_within_PD <- table1(~ Age + Age + Sex | ConsensusDx, data = msaAll)
+
+# Save the table as a CSV file
+write.csv(tbl_within_PD, "table1_within_PD_with_race_and_onset.csv")
+
+# Save the table as a PNG image including Race and Age of Onset
+png("table1_within_PD_with_race_and_onset.png", width = 800, height = 600)
+print(tbl_within_PD)
+dev.off()
+
+### PART1 SNP's Association with lysosomal biomarker pQTL + biomarkers by genotype
+
+# Read data
+neuroX <- read.csv('LysosomalDataNoGBA.csv', stringsAsFactors = FALSE)
+genotypeFrequencies <- read.csv('MAFSamples.csv')
+
+# Function to drop NA values in SNP column
+DropNA <- function(sheet, SNP) {
+  sheet[!is.na(sheet[,SNP]),]
+}
+
+## 1.1 SNP information
+# HW equilibrium, Function to return a table with counts of each genotype for a given SNP
+getFrequencyTable <- function(sheet, SNP, MAF) {
+  rs <- DropNA(sheet, SNP)
+  index <- which(colnames(sheet) == SNP)
+  q <- MAF
+  p <- 1 - q
+  Occur <- matrix(numeric(6), ncol = 3, nrow = 2, byrow = TRUE)
+  colnames(Occur) <- c("0", "1", "2")
+  rownames(Occur) <- c("Observed", "Expected")
+  
+  observedCounts <- table(as.factor(rs[, index]))
+  expectedCounts <- c(q^2 * nrow(rs), 2 * p * q * nrow(rs), p^2 * nrow(rs))
+  
+  # Ensure that all genotype classes are present
+  for (genotype in colnames(Occur)) {
+    if (!is.na(observedCounts[genotype])) {
+      Occur["Observed", genotype] <- observedCounts[genotype]
+    }
+  }
+  
+  Occur["Expected", ] <- expectedCounts
+  
+  return(as.table(Occur))
+}
+
+# Obtain MAF of a SNP in the cohort
+getMAF <- function(frequencyTable) {
+  return(sum(2 * frequencyTable[1], 1 * frequencyTable[3]) / (2 * sum(frequencyTable[1], frequencyTable[3], frequencyTable[5])))
+}
+
+# List of candidate SNPs
+candidateSNPs <- c('rs7910668', 'rs2305880', 'rs60492656', 'rs12657663', 'rs858274', 'rs4631423', 'rs10810829', 'rs6599388', 'rs7140', 'rs614348', 'rs4859655', 'rs6966915', 'rs199515', 'rs4555374', 'rs7843828', 'rs1935025', 'rs76572204', 'rs707951', 'rs7647812')
+
+# Loop through candidate SNPs and print MAF
+for (SNP in candidateSNPs) {
+  MAF_value <- genotypeFrequencies$MAF[which(genotypeFrequencies$Proxy.SNP == SNP)][1]
+  frequencyTable <- getFrequencyTable(neuroX, SNP, MAF_value)
+  cat("MAF for", SNP, ":", getMAF(frequencyTable), "\n")
+}
+
+## Regressions and pQTL analysis
+# List of proteins
+proteinList <- c(
+  "AP2B1", "APP", "C9", "CTSB", "CTSD", "CTSF", "CTSL", "CTSZ", 
+  "DPP7", "GM2A", "HEXB", "LAMP1", "LAMP2", "LYZ", "FUCA1", "TCN2", 
+  "TPP1", "Ubiquitin")
+
+# List of SNPs
+SNPList <- c("rs7910668", "rs2305880", "rs60492656", "rs12657663", 
+             "rs858274", "rs4631423", "rs10810829", "rs6599388", 
+             "rs7140", "rs614348", "rs4859655", "rs6966915", 
+             "rs199515", "rs4555374", "rs7843828", "rs1935025", 
+             "rs76572204", "rs707951", "rs7647812")
+
+# Function to run linear regressions for a given SNP and list of proteins
+runLM <- function(sheet, SNP, proteins) {
+  lmResults <- data.frame(SNP=character(), Protein=character(), 
+                          Estimate=numeric(), Std.Error=numeric(), 
+                          t.value=numeric(), Pr=numeric())
+  
+  for (protein in proteins) {
+    lmSummary <- summary(lm(sheet[, protein] ~ sheet[, SNP] + sheet[, "Age"] + 
+                              sheet[, "Sex"] + sheet[, "Plate"]))
+    coeff <- lmSummary$coefficients[2,]
+    lmResults <- rbind(lmResults, c(SNP, protein, coeff))
+  }
+  
+  colnames(lmResults) <- c("SNP", "Protein", "Estimate", "Std. Error", "t value", "Pr(>|t|)")
+  return(lmResults)
+}
+
+# Run regressions for all SNPs and compile results
+resultsCompiled <- do.call(rbind, lapply(SNPList, function(SNP) runLM(neuroX, SNP, proteinList)))
+
+# Extract p-values and adjust for multiple testing
+combinedPValues <- matrix(resultsCompiled$`Pr(>|t|)`, nrow=length(SNPList), ncol=length(proteinList), byrow=TRUE)
+colnames(combinedPValues) <- proteinList
+rownames(combinedPValues) <- SNPList
+
+resultsAdj <- matrix(NA, nrow=length(SNPList), ncol=length(proteinList))
+colnames(resultsAdj) <- proteinList
+rownames(resultsAdj) <- SNPList
+
+for (protein in proteinList) {
+  p_values <- combinedPValues[, protein]
+  adjusted_p_values <- p.adjust(p_values, method="BH")
+  resultsAdj[, protein] <- adjusted_p_values
+}
+
+# Save adjusted p-values to CSV
+write.csv(resultsAdj, "adjusted p-value for SNP's association with lysosomal biomarkers.csv", row.names = TRUE)
+
+# Convert the resultsAdj matrix to a tidy data frame
+resultsAdj_df <- as.data.frame(as.table(resultsAdj))
+
+# Plot heatmap with significance threshold marked on the scale bar
+ggplot(data = resultsAdj_df, aes(x = Var1, y = Var2)) +
+  geom_tile(aes(fill = Freq), color = "white") +
+  scale_fill_gradient(low = "#F7F7E9", high = "#BE5C37", limits = c(0, 1), 
+                      breaks = c(0, 0.05, 1), 
+                      labels = c("0", "0.05", "1")) +
+  labs(x = 'SNP', y = 'Protein', fill = 'Adjusted p-value') +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Identify significant associations
+significant_results <- resultsAdj_df[resultsAdj_df$Freq < 0.05, ]
+
+# Display in a table format
+print("Significant Associations:")
+print(data.frame(SNP = significant_results$Var1,
+                 Protein = significant_results$Var2,
+                 Adjusted_P_Value = significant_results$Freq))
+
+## 1.2 plots by genotypes
+
+# Prepare data
+prepare_data <- function(data, snp) {
+  data <- DropNA(data, snp)
+  data$snp_alleles <- factor(
+    ifelse(data[[snp]] == 0, "AA", 
+           ifelse(data[[snp]] == 1, "genotype", "GG")),
+    levels = c("GA", "GG")
+  )
+  return(data)
+}
+
+# Generate plot for a given protein
+generate_plot <- function(data, protein_name) {
+  plot <- ggplot(data, aes(x = snp_alleles, y = get(protein_name))) +
+    geom_boxplot(fill = "white", outlier.shape = NA) +
+    geom_jitter(aes(color = snp_alleles), width = 0.2, size = 0.85, pch = 16) +
+    scale_color_manual(values = c("GG" = "#04bcc3", "GA" = "#fb746c")) +
+    labs(
+      x = "rs12657663 Genotype", 
+      y = paste0(protein_name, " (Normalized)"), 
+      title = protein_name
+    ) +
+    theme_minimal(base_size = 15) +
+    theme(
+      axis.title.x = element_text(size = 15),
+      axis.title.y = element_text(size = 15),
+      plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    ylim(0, 1.8) +
+    geom_abline(intercept = 1, slope = 0, linetype = "dashed")
+  
+  return(plot)
+}
+
+# Save plot to file
+save_plot <- function(plot, protein_name) {
+  file_name <- paste0("PlotsByGenotype/rs12657663_", protein_name, ".tiff")
+  ggsave(filename = file_name, plot = plot, width = 5, height = 5, dpi = 300)
+}
+
+# Main code execution
+neuroXrs12657663tmp <- prepare_data(neuroX, "rs12657663")
+
+# Save data by genotype into a CSV file
+write.csv(neuroXrs12657663tmp, "GenotypeData_rs12657663.csv", row.names = FALSE)
+
+# List of proteins
+proteins <- c("CTSF", "CTSL", "HEXB", "TPP1")
+
+# Generate and save plots
+for (protein in proteins) {
+  plot <- generate_plot(neuroXrs12657663tmp, protein)
+  save_plot(plot, protein)
+}
+
+## 1.3 Peptide fragments analysis
+
+# Define the peptides for rs12657663 and rs7910668
+peptideListrs12657663 <- c("CTSF_103.116", "CTSF_236.245", "CTSF_266.278", "CTSF_442.450", 
+                           "CTSL_105.116", "HEXB_285.300", "HEXB_391.400", "TPP1_61.78", 
+                           "TPP1_246.259", "TPP1_507.520")
+
+peptideListrs7910668 <- c("CTSB_58.71", "CTSB_80.87", "CTSB_210.220")
+
+# Run linear regressions for peptides and SNPs
+rs7910668PeptideResults <- runLM(neuroX, "rs7910668", peptideListrs7910668)
+rs12657663PeptideResults <- runLM(neuroX, "rs12657663", peptideListrs12657663)
+
+# Add Benjamini-Hochberg adjusted p-values to the result data frames
+rs7910668PeptideResults$Adjusted_PValue <- p.adjust(rs7910668PeptideResults$`Pr(>|t|)`, method = "BH")
+rs12657663PeptideResults$Adjusted_PValue <- p.adjust(rs12657663PeptideResults$`Pr(>|t|)`, method = "BH")
+
+#Save peptide fragment analysis results
+write.csv(rs7910668PeptideResults, "rs7910668 peptide fragment analysis.csv", row.names = TRUE)
+write.csv(rs12657663PeptideResults, "rs12657663 peptide fragment analysis.csv", row.names = TRUE)
+
+### PART2 Comparison of lysosomal biomarkers in NC vs PD
+msaAll<-read.csv("msa.csv")
+
+# List of proteins to iterate over
+protein_names <- c("AP2B1", "APP","C9","CTSB" ,"CTSD","CTSF","CTSL","CTSZ","DPP7","GM2A", "HEXB", "LAMP1" ,"LAMP2","LYZ", "FUCA1","TCN2","TPP1", "Ubiquitin")
+
+# Create a directory to save plots
+plot_dir <- "NCvsPD_plots"
+if (!dir.exists(plot_dir)) {
+  dir.create(plot_dir)
+}
+
+# Create an empty data frame to store p-values and chi-squared values
+result_df <- data.frame(Protein = character(), P_Value = numeric(), ChiSquared = numeric(), stringsAsFactors = FALSE)
+
+# Loop through each protein
+for (protein_name in protein_names) {
+  # Perform the Kruskal-Wallis test
+  kruskal_test <- kruskal.test(as.formula(paste(protein_name, "~ SheetDx")), data = msaAll)
+  
+  # Save the p-value and chi-squared value to the data frame
+  result_df <- rbind(result_df, data.frame(Protein = protein_name, P_Value = kruskal_test$p.value, ChiSquared = kruskal_test$statistic))
+  
+  # Combine the main title with the p-value from the test
+  main_title <- paste("Boxplot of", protein_name, "\n", "Kruskal-Wallis p-value:", round(kruskal_test$p.value, 4))
+  
+  # Create the ggplot object
+  plot <- ggplot(msaAll, aes(x = SheetDx, y = get(protein_name), color = SheetDx)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(position = position_jitter(width = 0.1), size = 1, alpha = 0.5) +
+    scale_color_manual(values = c("#254750", "#6C91C2")) +
+    labs(title = main_title, x = "SheetDx", y = protein_name) +
+    theme_minimal(base_size = 10, base_family = "") + 
+    theme(legend.position = "none",
+          panel.background = element_rect(fill = "white"))
+  
+  # Save the plot to a file
+  ggsave(filename = paste(plot_dir, "/", protein_name, "_NCvsPD_plot.png", sep = ""), plot = plot)
+}
+
+
+
+# Save p-value and chi-squared value for Kruskal Wallis test
+write.csv(result_df, "NC vs PD kruskal-wallis results.csv", row.names = FALSE)
+
+##PART3 Comparison of lysosomal biomarkers within PD
+
+# Read and Prepare Data
+msaAll <- read.csv("msa.csv")
+proteins <- c("AP2B1", "APP", "C9", "CTSB", "CTSD", "CTSF", "CTSL", "CTSZ", "DPP7", "GM2A", "HEXB", "LAMP1", "LAMP2", "LYZ", "FUCA1", "TCN2", "TPP1", "Ubiquitin")
+
+# Create a directory to save plots
+if (!dir.exists("withinPDplots")) {
+  dir.create("withinPDplots")
+}
+
+# Define the colors for PD cognition types
+colors <- c("PD-NC" = "#4D6486", "PD-MCI" = "#547CAE", "PDD" = "#82AADB")
+
+# Data frame to store ANOVA p-values for each protein
+anova_results <- data.frame(Protein = character(), P_Value = numeric())
+
+# Filter out rows where ConsensusDx is NA
+msaAll <- subset(msaAll, !is.na(ConsensusDx))
+
+# Data frame to store Tukey's HSD p-values
+tukey_results <- data.frame(Protein = character(), PD_NC_vs_PD_MCI = numeric(), PD_NC_vs_PDD = numeric(), PD_MCI_vs_PDD = numeric())
+
+
+# Loop over each protein and perform the analysis
+for (protein in proteins) {
+  # One-way ANOVA
+  aov_result <- aov(get(protein) ~ ConsensusDx, data = msaAll)
+  p_value <- summary(aov_result)[[1]][1, 5]  # Get p-value from ANOVA summary
+  
+  # Add ANOVA result to the results data frame
+  anova_results <- rbind(anova_results, data.frame(Protein = protein, P_Value = p_value))
+  
+  # Perform Tukey's HSD test if p-value is significant
+  tukey_result <- if (p_value < 0.05) TukeyHSD(aov_result) else NULL
+  
+  if (!is.null(tukey_result)) {
+    tukey_data <- data.frame(tukey_result[[1]])
+    last_col <- ncol(tukey_data)  # Automatically detect the last column index
+    tukey_p_values <- tukey_data[, last_col]  # Assuming that the p-value is the last column
+    tukey_results <- rbind(tukey_results, data.frame(Protein = protein, PD_NC_vs_PD_MCI = tukey_p_values[1], PD_NC_vs_PDD = tukey_p_values[2], PD_MCI_vs_PDD = tukey_p_values[3]))
+  }
+    
+  
+   # Prepare plot title
+    plot_title <- paste("Lysosomal Concentration of", protein, "Across PD Cognition Types","\n", "One-way ANOVA p-value:", round(p_value, 4))
+  
+    # Add Tukey HSD results to the title if applicable
+      if (!is.null(tukey_result)) {
+        tukey_summary <- tukey_result$ConsensusDx  # Access the relevant component of the Tukey result
+        tukey_text <- paste("Tukey HSD p-adj:", paste(round(tukey_summary[,"p adj"], 4), collapse = ", "))
+        plot_title <- paste(plot_title, "\n", tukey_text)
+        }
+  
+   # Create the ggplot
+    plot <- ggplot(msaAll, aes(x = ConsensusDx, y = get(protein), color = ConsensusDx)) +
+     geom_boxplot(outlier.shape = NA) +
+     geom_jitter(position = position_jitter(width = 0.1), size = 1, alpha = 0.5) +
+      scale_color_manual(values = colors) +
+     labs(title = plot_title,
+           x = "PD Cognition Type",
+          y = "Concentration") +
+     theme_minimal(base_size = 10, base_family = "") +
+     theme(legend.position = "none", panel.background = element_rect(fill = "white"))
+  
+    # Save plot to a file
+     ggsave(filename = paste("withinPDplots/", protein, "_plot.png", sep = ""), plot = plot)
+}
+
+# Save ANOVA and Tukey HSD p-values to CSV files
+write.csv(anova_results, "anova_results.csv", row.names = FALSE)
+write.csv(tukey_results, "tukey_results.csv", row.names = FALSE)
+
+
+
+
+
